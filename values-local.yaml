@@ -1,0 +1,5 @@
+django:
+  uwsgiPass: "127.0.0.1:8081"
+  uwsgi:
+    replicas: 1
+  adminPassword: "SuperSecretAdminPass123!"
