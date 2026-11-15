@@ -11,10 +11,14 @@ env:
   DOCKER_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/devops-portfolio
   HELM_RELEASE_NAME: mi-app
   K8S_NAMESPACE: devops-portfolio
+  DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}          # URL pública de ngrok (sin / al final)
+  DEFECTDOJO_TOKEN: ${{ secrets.DEFECTDOJO_API_KEY }}      # Token API v2
+  PRODUCT_NAME: "Notes App"
+  ENGAGEMENT_NAME: "CI/CD Automated Security Audits"
 
 jobs:
   # =========================================================================
-  # FASE 1: BUILD & PACKAGE (Construcción Única de la Imagen Inmutable)
+  # FASE 1: BUILD & PACKAGE (Construcción de Imagen Inmutable)
   # =========================================================================
   build-and-package:
     name: "Fase 1: Build & Package (Imagen Inmutable)"
@@ -73,49 +77,66 @@ jobs:
         with:
           version: 'v3.13.0'
 
-      - name: Renderizar Helm Chart (TP10B Pattern)
+      - name: Renderizar Helm Chart (TP10B - Pattern)
         run: |
           helm template ${{ env.HELM_RELEASE_NAME }} ./devops-portfolio -f devops-portfolio/values-prod.yaml > manifests-rendered-prod.yaml
 
-      # =========================================================================
-      # 2A. THREAGILE THREAT MODELING (TP14)
-      # =========================================================================
-      - name: Ejecutar Threagile Threat Model
+      # -------------------------------------------------------------
+      # 2A. THREAGILE THREAT MODELING (TP14 - Generación y adaptación)
+      # -------------------------------------------------------------
+      - name: Ejecutar Threagile Threat Model Analysis
         uses: threagile/run-threagile-action@v1
         with:
           model-file: 'threagile.yaml'
+          output-dir: 'reports-json'
         continue-on-error: true
 
-      - name: Preparar reporte Threagile para DefectDojo
-        if: always()
+      - name: Normalizar reporte Threagile para DefectDojo
         run: |
-          echo "=== Archivos generados por Threagile ==="
-          find threagile/output -maxdepth 2 -type f -printf '%p\n' | sort || true
-
-          echo "=== Preparando reports-json ==="
-          mkdir -p reports-json
-
-          THREAGILE_JSON=$(find threagile/output -maxdepth 1 -type f -iname '*risk*.json' | head -n 1)
-
-          if [ -n "$THREAGILE_JSON" ]; then
-            cp "$THREAGILE_JSON" reports-json/threagile-results.json
-            echo "[OK] Reporte Threagile: $THREAGILE_JSON"
-            echo "[OK] Copiado como reports-json/threagile-results.json"
-          else
-            echo "[WARN] No se encontró ningún JSON de Threagile"
+          # Si la action generó risks.json nativo, lo dejamos; si no, adaptamos threagile-results.json
+          if [ ! -s "reports-json/risks.json" ]; then
+            SRC_FILE=$(find . -maxdepth 3 -name "threagile-results.json" | head -n 1)
+            if [ -n "$SRC_FILE" ]; then
+              python3 -c '
+          import json, sys
+          with open(sys.argv[1]) as f:
+              data = json.load(f)
+          findings = []
+          for risk_id, r in data.get("identified_risks", {}).items():
+              sev = r.get("severity", "Medium").capitalize()
+              if sev == "Very-high":
+                  sev = "Critical"
+              likelihood = r.get("exploitation_likelihood", "N/A")
+              impact = r.get("exploitation_impact", "N/A")
+              findings.append({
+                  "title": r.get("title", risk_id),
+                  "severity": sev,
+                  "description": f"Threat Model Risk ({risk_id}) - Likelihood: {likelihood}, Impact: {impact}",
+                  "vuln_id_from_tool": risk_id,
+                  "static_finding": True
+              })
+          with open("reports-json/threagile-dd.json", "w") as out:
+              json.dump({"findings": findings}, out, indent=2)
+          ' "$SRC_FILE"
+            fi
           fi
 
-      # =========================================================================
-      # 2B. SEMGREP SAST (TP15)
-      # =========================================================================
+      # -------------------------------------------------------------
+      # 2B. SEMGREP SAST (TP15 - Generación de JSON)
+      # -------------------------------------------------------------
       - name: Ejecutar Semgrep SAST
         run: |
           python3 -m pip install semgrep
-          semgrep scan --config=p/owasp-top-10 --config=p/python --config=p/dockerfile --json -o reports-json/semgrep-results.json || true
+          semgrep scan \
+            --config=p/owasp-top-10 \
+            --config=p/python \
+            --config=p/dockerfile \
+            --config=p/kubernetes \
+            --json -o reports-json/semgrep-results.json . || true
 
-      # =========================================================================
-      # 2C. TRIVY CONTAINER & SCA (TP16)
-      # =========================================================================
+      # -------------------------------------------------------------
+      # 2C. TRIVY CONTAINER & SCA (TP16 - Generación de JSON)
+      # -------------------------------------------------------------
       - name: Ejecutar Trivy Container Scan
         uses: aquasecurity/trivy-action@master
         with:
@@ -124,16 +145,19 @@ jobs:
           output: 'reports-json/trivy-container-results.json'
           exit-code: '0'
 
-      # =========================================================================
-      # 2D. GITLEAKS SECRET SCANNING (TP17)
-      # =========================================================================
+      # -------------------------------------------------------------
+      # 2D. GITLEAKS SECRET SCANNING (TP17 - Generación de JSON)
+      # -------------------------------------------------------------
       - name: Ejecutar Gitleaks CLI
         run: |
-          wget https://github.com/gitleaks/gitleaks/releases/download/v8.18.2/gitleaks_8.18.2_linux_x64.tar.gz
+          wget -q https://github.com/gitleaks/gitleaks/releases/download/v8.18.2/gitleaks_8.18.2_linux_x64.tar.gz
           tar -xzf gitleaks_8.18.2_linux_x64.tar.gz
           sudo mv gitleaks /usr/local/bin/
-          gitleaks detect --source . --report-format json --report-path reports-json/gitleaks-report.json || true
+          gitleaks detect --source . --report-format json --report-path reports-json/gitleaks-report.json --exit-code 0
 
+      # -------------------------------------------------------------
+      # Publicar Artefactos de Reportes JSON para la Fase 3
+      # -------------------------------------------------------------
       - name: Publicar Artefacto de Reportes JSON
         uses: actions/upload-artifact@v4
         with:
@@ -148,7 +172,6 @@ jobs:
     name: "Fase 3: Centralización en DefectDojo (Vulnerability Management)"
     runs-on: ubuntu-latest
     needs: [security-audits]
-    if: always()
     steps:
       - name: Descargar Reportes JSON
         uses: actions/download-artifact@v4
@@ -156,12 +179,7 @@ jobs:
           name: security-json-reports
           path: reports-json
 
-      - name: Reimportar Reportes JSON a DefectDojo API v2
-        env:
-          DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
-          DEFECTDOJO_TOKEN: ${{ secrets.DEFECTDOJO_API_KEY }}
-          PRODUCT_NAME: "Notes App"
-          ENGAGEMENT_NAME: "CI/CD Automated Security Audits"
+      - name: Reimportar auditorías a DefectDojo API v2
         run: |
           echo "=== Reimportando auditorías a DefectDojo API v2 ==="
 
@@ -177,12 +195,12 @@ jobs:
               HTTP_CODE=$(curl -sS \
                 -o "$RESPONSE_FILE" \
                 -w "%{http_code}" \
-                -X POST "$DEFECTDOJO_URL/api/v2/reimport-scan/" \
-                -H "Authorization: Token $DEFECTDOJO_TOKEN" \
+                -X POST "${{ env.DEFECTDOJO_URL }}/api/v2/reimport-scan/" \
+                -H "Authorization: Token ${{ env.DEFECTDOJO_TOKEN }}" \
                 -H "ngrok-skip-browser-warning: true" \
-                -F "product_name=$PRODUCT_NAME" \
+                -F "product_name=${{ env.PRODUCT_NAME }}" \
                 -F "product_type_name=Research and Development" \
-                -F "engagement_name=$ENGAGEMENT_NAME" \
+                -F "engagement_name=${{ env.ENGAGEMENT_NAME }}" \
                 -F "scan_type=$SCAN_TYPE" \
                 -F "auto_create_context=true" \
                 -F "close_old_findings=true" \
@@ -205,31 +223,38 @@ jobs:
             fi
           }
 
-          # Threagile Threat Model (TP14)
-          upload_scan \
-            "Threagile risks report" \
-            "reports-json/threagile-results.json"
+          # 1. Threagile Threat Model (TP14)
+          if [ -s "reports-json/risks.json" ]; then
+            upload_scan "Threagile risks report" "reports-json/risks.json"
+          else
+            upload_scan "Generic Findings Import" "reports-json/threagile-dd.json"
+          fi
 
-          # Semgrep JSON (TP15)
+          sleep 2
+
+          # 2. Semgrep JSON (TP15)
           upload_scan \
             "Semgrep JSON Report" \
             "reports-json/semgrep-results.json"
 
-          # Trivy JSON (TP16)
+          sleep 2
+
+          # 3. Trivy JSON (TP16)
           upload_scan \
             "Trivy Scan" \
             "reports-json/trivy-container-results.json"
 
-          # Gitleaks JSON (TP17)
+          sleep 2
+
+          # 4. Gitleaks JSON (TP17)
           upload_scan \
             "Gitleaks Scan" \
             "reports-json/gitleaks-report.json"
 
       - name: Resumen de Centralización en GitHub
-        if: always()
         run: |
           echo "### Centralización de Vulnerabilidades en DefectDojo :shield:" >> $GITHUB_STEP_SUMMARY
-          echo "Los reportes de Threagile, Semgrep, Trivy y Gitleaks han sido procesados, desduplicados y cargados exitosamente en la instancia de DefectDojo." >> $GITHUB_STEP_SUMMARY
+          echo "Los reportes de Threagile (TP14), Semgrep (TP15), Trivy (TP16) y Gitleaks (TP17) han sido procesados, desduplicados y reimportados exitosamente en la instancia de DefectDojo." >> $GITHUB_STEP_SUMMARY
 
   # =========================================================================
   # FASE 4: RELEASE & DEPLOY (Publicación y Despliegue Post-Aprobación)
@@ -238,7 +263,7 @@ jobs:
     name: "Fase 4: Release & Deploy Helm K8s"
     runs-on: ubuntu-latest
     needs: [build-and-package, security-audits, defectdojo-import]
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     steps:
       - name: Checkout del código
         uses: actions/checkout@v4
