@@ -1,0 +1,48 @@
+name: Self-Hosted Runner Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  runner-test:
+    runs-on: self-hosted
+
+    steps:
+      - name: Información del runner
+        run: |
+          echo "=== RUNNER ==="
+          echo "Runner: $RUNNER_NAME"
+          echo "OS: $RUNNER_OS"
+          echo "Arch: $RUNNER_ARCH"
+          echo "Hostname: $(hostname)"
+          echo "Usuario: $(id -un)"
+          echo "UID: $(id -u)"
+          echo "GID: $(id -g)"
+
+      - name: Verificar entorno
+        run: |
+          echo "=== ENTORNO ==="
+          uname -a
+          cat /etc/os-release | head -5
+
+      - name: Verificar acceso interno a DefectDojo
+        run: |
+          echo "=== DEFECTDOJO ==="
+          python3 - <<'PYTHON'
+          import urllib.request
+
+          for url in [
+              "http://defectdojo-django.defectdojo.svc.cluster.local",
+              "http://defectdojo-django.defectdojo.svc.cluster.local:8080"
+          ]:
+              try:
+                  response = urllib.request.urlopen(url, timeout=5)
+                  print(f"DefectDojo accesible en {url}: HTTP {response.status}")
+                  break
+              except Exception as e:
+                  print(f"Fallo en {url}: {e}")
+          PYTHON
+
+      - name: Finalizar prueba
+        run: |
+          echo "Self-Hosted Runner funcionando correctamente."
