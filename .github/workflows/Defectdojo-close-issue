@@ -1,0 +1,36 @@
+name: Cerrar Hallazgo en DefectDojo al Cerrar Issue
+
+on:
+  issues:
+    types: [closed]
+
+jobs:
+  close-defectdojo-finding:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Extraer ID del Finding y cerrarlo en DefectDojo
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
+          DEFECTDOJO_TOKEN: ${{ secrets.DEFECTDOJO_API_KEY }}
+        run: |
+          # Extrae el número después de /finding/ en la URL que deja DefectDojo en la Issue
+          FINDING_ID=$(echo "$ISSUE_BODY" | grep -oE '/finding/[0-9]+' | grep -oE '[0-9]+' | head -n 1)
+
+          if [ -z "$FINDING_ID" ]; then
+            echo "Esta Issue no está vinculada a un Finding de DefectDojo. Saliendo..."
+            exit 0
+          fi
+
+          echo "Cerrando Finding ID: $FINDING_ID en DefectDojo..."
+
+          curl -sS -X PATCH "${DEFECTDOJO_URL}/api/v2/findings/${FINDING_ID}/" \
+            -H "Authorization: Token ${DEFECTDOJO_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -H "ngrok-skip-browser-warning: true" \
+            -d '{
+              "active": false,
+              "verified": false,
+              "is_mitigated": true,
+              "mitigated": "'"$(date -u +"%Y-%m-%dT%H:%M:%SZ")"'"
+            }'
