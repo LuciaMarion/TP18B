@@ -15,8 +15,8 @@ env:
   DOCKER_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/devops-portfolio
   HELM_RELEASE_NAME: mi-app
   K8S_NAMESPACE: devops-portfolio
-  DEFECTDOJO_URL: "http://defectdojo-django.defectdojo.svc.cluster.local"          # URL pública de ngrok (sin / al final)
-  DEFECTDOJO_TOKEN: ${{ secrets.DEFECTDOJO_API_KEY }}      # Token API v2
+  DEFECTDOJO_URL: "http://defectdojo-django.defectdojo.svc.cluster.local"
+  DEFECTDOJO_TOKEN: ${{ secrets.DEFECTDOJO_API_KEY }}
   PRODUCT_NAME: "Notes App"
   ENGAGEMENT_NAME: "CI/CD Automated Security Audits"
 
@@ -31,24 +31,9 @@ jobs:
       - name: Checkout del código
         uses: actions/checkout@v4
 
-      - name: Configurar Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
       - name: Compilar imagen Docker
         run: |
           docker build -t ${{ env.DOCKER_IMAGE }}:${{ github.sha }} ./backend
-
-      - name: Exportar imagen a tarball efímero
-        run: |
-          mkdir -p build-artifacts
-          docker save ${{ env.DOCKER_IMAGE }}:${{ github.sha }} -o build-artifacts/app-image.tar
-
-      - name: Publicar Artefacto de Imagen
-        uses: actions/upload-artifact@v4
-        with:
-          name: docker-image-artifact
-          path: build-artifacts/app-image.tar
-          retention-days: 1
 
   # =========================================================================
   # FASE 2: AUDITORÍAS DE CIBERSEGURIDAD Y GENERACIÓN DE REPORTES JSON
@@ -66,15 +51,11 @@ jobs:
       - name: Crear carpeta para reportes JSON
         run: mkdir -p reports-json
 
-      - name: Descargar Artefacto de Imagen
-        uses: actions/download-artifact@v4
-        with:
-          name: docker-image-artifact
-          path: build-artifacts
-
-      - name: Cargar imagen Docker compilada
+      - name: Asegurar imagen Docker local
         run: |
-          docker load -i build-artifacts/app-image.tar
+          if ! docker image inspect ${{ env.DOCKER_IMAGE }}:${{ github.sha }} >/dev/null 2>&1; then
+            docker build -t ${{ env.DOCKER_IMAGE }}:${{ github.sha }} ./backend
+          fi
 
       - name: Instalar Helm CLI
         uses: azure/setup-helm@v4
@@ -85,9 +66,7 @@ jobs:
         run: |
           helm template ${{ env.HELM_RELEASE_NAME }} ./devops-portfolio -f devops-portfolio/values-prod.yaml > manifests-rendered-prod.yaml
 
-      # -------------------------------------------------------------
-      # 2A. THREAGILE THREAT MODELING (TP14 - Generación y adaptación)
-      # -------------------------------------------------------------
+      # 2A. THREAGILE THREAT MODELING
       - name: Ejecutar Threagile Threat Model Analysis
         uses: threagile/run-threagile-action@v1
         with:
@@ -97,7 +76,6 @@ jobs:
 
       - name: Normalizar reporte Threagile para DefectDojo
         run: |
-          # Si la action generó risks.json nativo, lo dejamos; si no, adaptamos threagile-results.json
           if [ ! -s "reports-json/risks.json" ]; then
             SRC_FILE=$(find . -maxdepth 3 -name "threagile-results.json" | head -n 1)
             if [ -n "$SRC_FILE" ]; then
@@ -125,22 +103,19 @@ jobs:
             fi
           fi
 
-      # -------------------------------------------------------------
-      # 2B. SEMGREP SAST (TP15 - Generación de JSON)
-      # -------------------------------------------------------------
+      # 2B. SEMGREP SAST
       - name: Ejecutar Semgrep SAST
         run: |
-          python3 -m pip install semgrep
-          semgrep scan \
+          python3 -m venv /tmp/semgrep-venv
+          /tmp/semgrep-venv/bin/pip install -q semgrep
+          /tmp/semgrep-venv/bin/semgrep scan \
             --config=p/owasp-top-10 \
             --config=p/python \
             --config=p/dockerfile \
             --config=p/kubernetes \
             --json -o reports-json/semgrep-results.json . || true
 
-      # -------------------------------------------------------------
-      # 2C. TRIVY CONTAINER & SCA (TP16 - Generación de JSON)
-      # -------------------------------------------------------------
+      # 2C. TRIVY CONTAINER & SCA
       - name: Ejecutar Trivy Container Scan
         uses: aquasecurity/trivy-action@master
         with:
@@ -149,9 +124,7 @@ jobs:
           output: 'reports-json/trivy-container-results.json'
           exit-code: '0'
 
-      # -------------------------------------------------------------
-      # 2D. GITLEAKS SECRET SCANNING (TP17 - Generación de JSON)
-      # -------------------------------------------------------------
+      # 2D. GITLEAKS SECRET SCANNING
       - name: Ejecutar Gitleaks CLI
         run: |
           wget -q https://github.com/gitleaks/gitleaks/releases/download/v8.18.2/gitleaks_8.18.2_linux_x64.tar.gz
@@ -159,9 +132,7 @@ jobs:
           sudo mv gitleaks /usr/local/bin/
           gitleaks detect --source . --report-format json --report-path reports-json/gitleaks-report.json --exit-code 0
 
-      # -------------------------------------------------------------
-      # 2E. GITHUB NATIVE ALERTS - DEPENDABOT (TP18C - API REST)
-      # -------------------------------------------------------------
+      # 2E. GITHUB NATIVE ALERTS - DEPENDABOT
       - name: Exportar alertas nativas de GitHub (Dependabot)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -172,13 +143,10 @@ jobs:
             "https://api.github.com/repos/${{ github.repository }}/dependabot/alerts?state=open")
           
           if [ "$HTTP_STATUS" -ne 200 ]; then
-            echo "Aviso: API de Dependabot devolvió HTTP $HTTP_STATUS (puede no estar habilitado o sin alertas). Generando JSON vacío."
+            echo "Aviso: API de Dependabot devolvió HTTP $HTTP_STATUS. Generando JSON vacío."
             echo "[]" > reports-json/dependabot-alerts.json
           fi
 
-      # -------------------------------------------------------------
-      # Publicar Artefactos de Reportes JSON para la Fase 3
-      # -------------------------------------------------------------
       - name: Publicar Artefacto de Reportes JSON
         uses: actions/upload-artifact@v4
         with:
@@ -210,7 +178,6 @@ jobs:
 
             if [ -f "$FILE_PATH" ]; then
               echo "  [+] Reimportando $SCAN_TYPE ($FILE_PATH)..."
-
               RESPONSE_FILE=$(mktemp)
 
               HTTP_CODE=$(curl -sS \
@@ -218,7 +185,6 @@ jobs:
                 -w "%{http_code}" \
                 -X POST "${{ env.DEFECTDOJO_URL }}/api/v2/reimport-scan/" \
                 -H "Authorization: Token ${{ env.DEFECTDOJO_TOKEN }}" \
-                -H "ngrok-skip-browser-warning: true" \
                 -F "product_name=${{ env.PRODUCT_NAME }}" \
                 -F "product_type_name=Research and Development" \
                 -F "engagement_name=${{ env.ENGAGEMENT_NAME }}" \
@@ -234,10 +200,8 @@ jobs:
 
               if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
                 echo "      [OK] Reimportación exitosa (HTTP $HTTP_CODE)"
-                echo "      Respuesta: $RESPONSE"
               else
-                echo "      [FAIL] Reimportación rechazada (HTTP $HTTP_CODE)"
-                echo "      Respuesta: $RESPONSE"
+                echo "      [FAIL] Reimportación rechazada (HTTP $HTTP_CODE): $RESPONSE"
                 return 1
               fi
             else
@@ -246,45 +210,19 @@ jobs:
             fi
           }
 
-          # 1. Threagile Threat Model (TP14)
           if [ -s "reports-json/risks.json" ]; then
             upload_scan "Threagile risks report" "reports-json/risks.json"
           else
             upload_scan "Generic Findings Import" "reports-json/threagile-dd.json"
           fi
-
           sleep 2
-
-          # 2. Semgrep JSON (TP15)
-          upload_scan \
-            "Semgrep JSON Report" \
-            "reports-json/semgrep-results.json"
-
+          upload_scan "Semgrep JSON Report" "reports-json/semgrep-results.json"
           sleep 2
-
-          # 3. Trivy JSON (TP16)
-          upload_scan \
-            "Trivy Scan" \
-            "reports-json/trivy-container-results.json"
-
+          upload_scan "Trivy Scan" "reports-json/trivy-container-results.json"
           sleep 2
-
-          # 4. Gitleaks JSON (TP17)
-          upload_scan \
-            "Gitleaks Scan" \
-            "reports-json/gitleaks-report.json"
-
+          upload_scan "Gitleaks Scan" "reports-json/gitleaks-report.json"
           sleep 2
-
-          # 5. GitHub Dependabot Alerts (TP18C)
-          upload_scan \
-            "Github Vulnerability Scan" \
-            "reports-json/dependabot-alerts.json"
-
-      - name: Resumen de Centralización en GitHub
-        run: |
-          echo "### Centralización de Vulnerabilidades en DefectDojo :shield:" >> $GITHUB_STEP_SUMMARY
-          echo "Los reportes de Threagile (TP14), Semgrep (TP15), Trivy (TP16), Gitleaks (TP17) y GitHub Dependabot Alerts (TP18C) han sido procesados, desduplicados y reimportados exitosamente en la instancia de DefectDojo." >> $GITHUB_STEP_SUMMARY
+          upload_scan "Github Vulnerability Scan" "reports-json/dependabot-alerts.json"
 
   # =========================================================================
   # FASE 4: RELEASE & DEPLOY (Publicación y Despliegue Post-Aprobación)
@@ -298,15 +236,11 @@ jobs:
       - name: Checkout del código
         uses: actions/checkout@v4
 
-      - name: Descargar Artefacto de Imagen
-        uses: actions/download-artifact@v4
-        with:
-          name: docker-image-artifact
-          path: build-artifacts
-
-      - name: Cargar imagen Docker probada
+      - name: Asegurar imagen Docker local
         run: |
-          docker load -i build-artifacts/app-image.tar
+          if ! docker image inspect ${{ env.DOCKER_IMAGE }}:${{ github.sha }} >/dev/null 2>&1; then
+            docker build -t ${{ env.DOCKER_IMAGE }}:${{ github.sha }} ./backend
+          fi
 
       - name: Login a Docker Hub
         uses: docker/login-action@v3
