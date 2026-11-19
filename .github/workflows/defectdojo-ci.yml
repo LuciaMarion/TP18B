@@ -164,7 +164,7 @@ jobs:
       # -------------------------------------------------------------
       - name: Exportar alertas nativas de GitHub (Dependabot GraphQL)
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GIT_TOKEN }}
         run: |
           OWNER="${{ github.repository_owner }}"
           REPO="${{ github.event.repository.name }}"
