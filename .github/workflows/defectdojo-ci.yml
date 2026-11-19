@@ -15,8 +15,8 @@ env:
   DOCKER_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/devops-portfolio
   HELM_RELEASE_NAME: mi-app
   K8S_NAMESPACE: devops-portfolio
-  DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}          # URL pública de ngrok (sin / al final)
-  DEFECTDOJO_TOKEN: ${{ secrets.DEFECTDOJO_API_KEY }}      # Token API v2
+  DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}         
+  DEFECTDOJO_TOKEN: ${{ secrets.DEFECTDOJO_API_KEY }}      
   PRODUCT_NAME: "Notes App"
   ENGAGEMENT_NAME: "CI/CD Automated Security Audits"
 
