@@ -169,7 +169,7 @@ jobs:
           OWNER="${{ github.repository_owner }}"
           REPO="${{ github.event.repository.name }}"
           
-          QUERY='{"query": "query { repository(owner: \"'"$OWNER"'\", name: \"'"$REPO"'\") { vulnerabilityAlerts(first: 100, states: OPEN) { nodes { createdAt dismissReason securityVulnerability { package { name ecosystem } severity advisory { summary description identifiers { type value } references { url } } vulnerableVersionRange } } } } }"}'
+          QUERY='{"query": "query { repository(owner: \"'"$OWNER"'\", name: \"'"$REPO"'\") { vulnerabilityAlerts(first: 100, states: OPEN) { nodes { id createdAt vulnerableManifestPath vulnerableRequirements securityVulnerability { package { name ecosystem } severity advisory { summary description ghsaId permalink identifiers { type value } references { url } } firstPatchedVersion { identifier } } } } } }"}'
 
           HTTP_STATUS=$(curl -s -o reports-json/dependabot-alerts.json -w "%{http_code}" \
             -H "Authorization: Bearer $GH_TOKEN" \
