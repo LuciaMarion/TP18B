@@ -162,18 +162,24 @@ jobs:
       # -------------------------------------------------------------
       # 2E. GITHUB NATIVE ALERTS - DEPENDABOT (TP18C - API REST)
       # -------------------------------------------------------------
-      - name: Exportar alertas nativas de GitHub (Dependabot)
+      - name: Exportar alertas nativas de GitHub (Dependabot GraphQL)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          HTTP_STATUS=$(curl -s -o reports-json/dependabot-alerts.json -w "%{http_code}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            "https://api.github.com/repos/${{ github.repository }}/dependabot/alerts?state=open")
+          OWNER="${{ github.repository_owner }}"
+          REPO="${{ github.event.repository.name }}"
           
+          QUERY='{"query": "query { repository(owner: \"'"$OWNER"'\", name: \"'"$REPO"'\") { vulnerabilityAlerts(first: 100, states: OPEN) { nodes { createdAt dismissReason securityVulnerability { package { name ecosystem } severity advisory { summary description identifiers { type value } references { url } } vulnerableVersionRange } } } } }"}'
+
+          HTTP_STATUS=$(curl -s -o reports-json/dependabot-alerts.json -w "%{http_code}" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Content-Type: application/json" \
+            -X POST -d "$QUERY" \
+            "https://api.github.com/graphql")
+
           if [ "$HTTP_STATUS" -ne 200 ]; then
-            echo "Aviso: API de Dependabot devolvió HTTP $HTTP_STATUS (puede no estar habilitado o sin alertas). Generando JSON vacío."
-            echo "[]" > reports-json/dependabot-alerts.json
+            echo "Aviso: API GraphQL devolvió HTTP $HTTP_STATUS. Generando JSON vacío."
+            echo "{}" > reports-json/dependabot-alerts.json
           fi
 
       # -------------------------------------------------------------
